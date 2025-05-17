@@ -1,10 +1,10 @@
 import dash
 from dash import dcc, html
 from dash.dependencies import Input, Output
-import pandas as pd
 import plotly.graph_objs as go
-import datetime
+import pandas as pd
 import numpy as np
+import datetime
 
 app = dash.Dash(__name__)
 app.title = "USD/CHF Live Dashboard"
@@ -14,9 +14,11 @@ def get_latest_price():
         with open('price.txt', 'r') as f:
             lines = f.readlines()
             if lines:
-                return lines[-1].strip().split(" - USD/CHF Price: ")
+                parts = lines[-1].strip().split(" - USD/CHF Price: ")
+                if len(parts) == 2:
+                    return parts
     except FileNotFoundError:
-        return None, None
+        pass
     return None, None
 
 def get_price_history():
@@ -25,9 +27,16 @@ def get_price_history():
             lines = f.readlines()
             timestamps, prices = [], []
             for line in lines:
-                timestamp, price = line.strip().split(" - USD/CHF Price: ")
-                timestamps.append(timestamp)
-                prices.append(float(price))
+                parts = line.strip().split(" - USD/CHF Price: ")
+                if len(parts) != 2:
+                    continue
+                timestamp, price_str = parts
+                try:
+                    price = float(price_str)
+                    timestamps.append(timestamp)
+                    prices.append(price)
+                except ValueError:
+                    continue
             return pd.DataFrame({'Timestamp': pd.to_datetime(timestamps), 'Price': prices})
     except FileNotFoundError:
         return pd.DataFrame(columns=['Timestamp', 'Price'])
@@ -41,7 +50,7 @@ def calculate_daily_report():
     today = datetime.datetime.now().date()
     today_df = df[df['Date'] == today]
 
-    if today_df.empty:
+    if today_df.shape[0] < 2:
         return None
 
     open_price = today_df.iloc[0]['Price']
@@ -52,6 +61,33 @@ def calculate_daily_report():
 
     return {
         'date': today,
+        'open': open_price,
+        'close': close_price,
+        'volatility': volatility,
+        'change': change,
+        'evolution': evolution
+    }
+
+def calculate_weekly_report():
+    df = get_price_history()
+    if df.empty:
+        return None
+
+    df['Date'] = df['Timestamp'].dt.date
+    today = datetime.datetime.now().date()
+    week_ago = today - datetime.timedelta(days=7)
+    week_df = df[(df['Date'] > week_ago) & (df['Date'] <= today)]
+
+    if week_df.shape[0] < 2:
+        return None
+
+    open_price = week_df.iloc[0]['Price']
+    close_price = week_df.iloc[-1]['Price']
+    volatility = np.std(week_df['Price'])
+    change = close_price - open_price
+    evolution = (change / open_price) * 100
+
+    return {
         'open': open_price,
         'close': close_price,
         'volatility': volatility,
@@ -70,12 +106,12 @@ app.layout = html.Div(style={'backgroundColor': '#0e1a2b', 'color': '#ffffff', '
         ], style={'backgroundColor': '#2c3e50', 'padding': '20px', 'borderRadius': '10px', 'width': '30%'}),
 
         html.Div([
-            html.Div("Change", style={'fontSize': '20px'}),
+            html.Div("Change (Last 7 Days)", style={'fontSize': '20px'}),
             html.Div(id="change", style={'fontSize': '40px', 'fontWeight': 'bold'})
         ], style={'backgroundColor': '#2c3e50', 'padding': '20px', 'borderRadius': '10px', 'width': '30%'}),
 
         html.Div([
-            html.Div("Volatility", style={'fontSize': '20px'}),
+            html.Div("Volatility (Last 7 Days)", style={'fontSize': '20px'}),
             html.Div(id="volatility", style={'fontSize': '40px', 'fontWeight': 'bold', 'color': '#ff6f61'})
         ], style={'backgroundColor': '#1e1e1e', 'padding': '20px', 'borderRadius': '10px', 'width': '30%'})
     ], style={'display': 'flex', 'justifyContent': 'space-between', 'marginBottom': '30px'}),
@@ -90,7 +126,7 @@ app.layout = html.Div(style={'backgroundColor': '#0e1a2b', 'color': '#ffffff', '
         html.Pre(id='daily-report', style={'fontSize': '20px'})
     ]),
 
-    dcc.Interval(id='interval-component', interval=5*60*1000, n_intervals=0)
+    dcc.Interval(id='interval-component', interval=5*60*1000, n_intervals=0)  # refresh every 5 minutes
 ])
 
 @app.callback(
@@ -130,22 +166,33 @@ def update_dashboard(n):
         figure = {}
 
     report = calculate_daily_report()
+    weekly_report = calculate_weekly_report()
+
+    if weekly_report:
+        change_display = f"{weekly_report['change']:+.4f}"
+        vol_display = f"{weekly_report['volatility']:.4f}"
+    else:
+        change_display = "N/A"
+        vol_display = "N/A"
+
     if report:
-        change_display = f"{report['change']:+.4f}"
-        vol_display = f"{report['volatility']:.2f}"
         report_text = (
             f"Report of {report['date']} :\n"
             f"- Open : {report['open']:.4f}\n"
             f"- Close : {report['close']:.4f}\n"
-            f"- Volatility : {report['volatility']:.2f}\n"
+            f"- Volatility : {report['volatility']:.4f}\n"
             f"- Evolution : {report['evolution']:.2f}%"
         )
     else:
-        change_display = "N/A"
-        vol_display = "N/A"
         report_text = "No daily report available."
 
-    return f"{latest_price_str} at {timestamp}", change_display, vol_display, figure, report_text
+    if timestamp and latest_price_str:
+        latest_display = f"{latest_price_str} at {timestamp}"
+    else:
+        latest_display = "No latest price available."
+
+    return latest_display, change_display, vol_display, figure, report_text
+
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=8050)
